@@ -1,0 +1,565 @@
+﻿/*
+ * Added conversion of the encode functionality of json.lua code 
+ * at https://github.com/rxi/json.lua, fixed a bug of conversion
+ * of decode functionality and wrapped the functions to the json object
+ * so the global namespace is not polluted by helper functions.
+ * Conversion and additions done by Michael Jurisch
+ *
+ * Converted from json.lua code at https://github.com/rxi/json.lua
+ * Conversion done by Christophe Gouiran (bechris13250@gmail.com)
+ *
+ * Original copyright:
+ *
+ * json.lua
+ *
+ * Copyright (c) 2019 rxi
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is furnished to do
+ * so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ */
+
+Global json = { _version = "0.1.2" }
+json._helper = {}
+
+ ; NOTICE: in contrast to lua original code values of escape_char_map and 
+ ; escape_char_map_inv are combined in escape_char_map
+json._helper.escape_char_map = {
+    [ "\\/" ] = "/",
+    [ "\\" ] = "\\\\",
+    [ "\"" ] = "\\\"",
+    [ "\b" ] = "\\b",
+    [ "\f" ] = "\\f",
+    [ "\n" ] = "\\n",
+    [ "\r" ] = "\\r",
+    [ "\t" ] = "\\t",
+}
+
+json._helper.escape_char_map_inv = Function(c)
+    Return(RawGet(json._helper.escape_char_map, c))
+EndFunction
+
+; ---------------------
+; -
+; -- Encode
+; ---------------------
+
+; encapsulate all encode functions
+
+Function json.encode(val)
+    Local Function encode (val, stack)
+    
+        Local Function escape_char(c)
+            Return(json._helper.escape_char_map[c] Or FormatStr("\\u%04x", ByteAsc(c)))
+        EndFunction
+        
+        Local Function encode_nil(val)
+            Return("null")
+        EndFunction
+        
+        Local Function encode_table(val, stack)
+        
+            Local res = {}
+        
+            If IsNil(stack) = True
+                stack = {}
+            EndIf
+        
+            ;// Circular reference?
+            If HaveItem(stack, val) = True And stack[val] = True Then Error("circular reference")
+        
+            stack[val] = True
+        
+            Local nextIndex, nextValue = NextItem(val)
+        
+            If IsNil(RawGet(val, 0)) = False Or IsNil(nextIndex) = True
+                ; Treat as array -- check keys are valid and it is not sparse
+                Local n = 0
+        
+                For k, v In Pairs(val)
+                    If GetType(k) <> #NUMBER Then Error("invalid table: mixed or invalid key types")
+        
+                    n = n + 1
+                Next
+        
+                If n <> ListItems(val) Then Error("invalid table: sparse array")
+        
+                ; Encode
+                For i, v In IPairs(val)
+                    InsertItem(res, encode(v, stack))
+                Next
+        
+                stack[val] = Nil
+        
+                Local result = "[" .. Concat(res, ", ") .. "]"
+                Return(result)
+            Else
+                ; Treat as an object
+        
+                For k, v In Pairs(val)
+                    If GetType(k) <> #STRING Then Error("invalid table: mixed or invalid key types")
+        
+                    InsertItem(res, encode(k, stack) .. ": " .. encode(v, stack))
+                Next
+        
+                stack[val] = Nil
+        
+                Local result = "{" .. Concat(res, ", ") .. "}"
+                Return(result)
+            EndIf
+        
+        EndFunction
+        
+        Local Function encode_string(val)
+            Local replacedString = PatternReplaceStr(val, "[%z\1-\31\\\"]", escape_char)
+        
+            Return("\"" .. replacedString .. "\"")
+        EndFunction
+        
+        Local Function encode_number(val)
+            If val <> val Then Error("unexpected number value '" .. val .. "'")
+            
+            Return(FormatStr("%.14g", val))
+        EndFunction
+        
+        Local type_func_map = {
+            [ "nil"     ] = encode_nil,
+            [ "table"   ] = encode_table,
+            [ "string"  ] = encode_string,
+            [ "number"  ] = encode_number,
+            [ "boolean" ] = tostring ; TODO but not possible :-(
+        }
+    
+        Local t = GetType(val)
+    
+        ;// NOTICE: bool values (true/false) are also from type number in Hollywood, so there is no chance to distinguish them from numbers (1/0) :-(
+        Local type_as_string = "not_supported"
+        Switch t
+            Case #NUMBER
+                type_as_string = "number"
+            Case #TABLE
+                type_as_string = "table"
+            Case #STRING
+                type_as_string = "string"
+            Case #NIL
+                type_as_string = "nil"
+        EndSwitch
+
+        Local f = type_func_map[type_as_string]
+        If f Then Return( f(val, stack) )
+    
+        Error("unexpected type '" .. t .. "'")
+    
+    EndFunction
+
+    Return( encode(val) )
+EndFunction
+
+;// alternative way of calling the function
+Function json_encode(val)
+    Return( json.encode(val) )
+EndFunction
+
+; ---------------------
+; -
+; -- Decode
+; ---------------------
+
+; encapsulate all decode functions
+Function json.decode(str)
+
+    Local Function create_set(...)
+        Local res = {}
+    
+        For Local i = 0 To arg.n - 1
+            res[ arg[i] ] = True
+        Next
+
+        Return(res)
+
+    EndFunction
+    
+    Local space_chars  = create_set(" ", "\t", "\r", "\n")
+    Local delim_chars  = create_set(" ", "\t", "\r", "\n", "]", "}", ",")
+    Local escape_chars = create_set("\\", "/", "\"", "b", "f", "n", "r", "t", "u")
+    Local literals     = create_set("true", "false", "null")
+    
+    Local literal_map = {
+        [ "true"  ] = True,
+        [ "false" ] = False,
+        [ "null"  ] = "null",
+    }
+    
+    Local Function next_char(str, idx, set, negate)
+        
+        For Local i = idx To StrLen(str) - 1
+            
+            Local t = MidStr(str, i, 1)
+            
+            If RawGet(set, t) <> negate
+                Return(i)
+            EndIf
+        Next
+
+        Return(StrLen(str) + 1)
+
+    EndFunction
+    
+    Local Function decode_error(str, idx, msg)
+    
+        Local len = StrLen(str)
+    
+        Local line_count = 1
+        Local col_count = 1
+        For i = 0 To idx - 1
+            If i >= len
+                Break
+            EndIf
+            col_count = col_count + 1
+            If ByteAsc(str, i) = 10
+                line_count = line_count + 1
+                col_count = 1
+            EndIf
+        Next
+
+        Error( FormatStr("%s at line %d col %d", msg, line_count, col_count) )
+    
+        EndFunction
+    
+    Local Function codepoint_to_utf8(n)
+
+        ; http://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&id=iws-appendixa
+        Local f = Floor
+        If n <= 0x7f
+            ReturnChr(n, #ENCODING_RAW)
+        ElseIf n <= 0x7ff
+            Return(Chr(f(n / 64) + 192, #ENCODING_RAW) .. Chr(n % 64 + 128, #ENCODING_RAW))
+        ElseIf n <= 0xffff
+            Return(Chr(f(n / 4096) + 224, #ENCODING_RAW) .. Chr(f(n % 4096 / 64) + 128, #ENCODING_RAW) .. Chr(n % 64 + 128, #ENCODING_RAW))
+        ElseIf n <= 0x10ffff
+            Return(Chr(f(n / 262144) + 240, #ENCODING_RAW) .. Chr(f(n % 262144 / 4096) + 128, #ENCODING_RAW) .. Chr(f(n % 4096 / 64) + 128, #ENCODING_RAW) .. Chr(n % 64 + 128, #ENCODING_RAW))
+        EndIf
+
+        Error( FormatStr("invalid unicode codepoint '%x'", n) )
+
+    EndFunction
+    
+    Local Function parse_unicode_escape(s)
+        
+        Local n1 = ToNumber( MidStr(s, 2, 4), 16)
+        Local n2 = ToNumber( MidStr(s, 8, 4), 16)
+    
+        ; Surrogate pair?
+        If n2
+            Return(codepoint_to_utf8((n1 - 0xd800) * 0x400 + (n2 - 0xdc00) + 0x10000))
+        Else
+            Return(codepoint_to_utf8(n1))
+        EndIf
+    
+    EndFunction
+    
+    Local Function parse_string(str, i)
+        
+        Local has_unicode_escape = False
+        Local has_surrogate_escape = False
+        Local has_escape = False
+        Local last
+        For j = i + 1 To StrLen(str) - 1
+            Local x = ByteAsc(str, j)
+    
+            If x < 32
+                decode_error(str, j, "control character in string")
+            EndIf
+    
+            If last = 92 ; "\\" (escape char)
+                If x = 117 ; "u" (unicode escape sequence)
+                    Local hex = MidStr(str, j + 1, 4)
+                    If PatternFindStrDirect(hex, "%x%x%x%x") = -1
+                        decode_error(str, j, "invalid unicode escape in string")
+                    EndIf
+                    If PatternFindStrDirect(hex, "^[dD][89aAbB]") = 0
+                        has_surrogate_escape = True
+                    Else
+                        has_unicode_escape = True
+                    EndIf
+                Else
+                    Local c = Chr(x)
+                    If Not escape_chars[c]
+                        decode_error(str, j, "invalid escape char '" .. c .. "' in string")
+                    EndIf
+                    has_escape = True
+                EndIf
+                last = Nil
+    
+            ElseIf x = 34 ; '"' (end of string)
+                Local s = MidStr(str, i + 1, j - i - 1)
+                If has_surrogate_escape
+                    s = PatternReplaceStr(s, "\\u[dD][89aAbB]..\\u....", parse_unicode_escape)
+                EndIf
+                If has_unicode_escape
+                    s = PatternReplaceStr(s, "\\u....", parse_unicode_escape)
+                EndIf
+                If has_escape
+                    s = PatternReplaceStr(s, "\\.", json._helper.escape_char_map_inv)
+                EndIf
+                Return(s, j + 1)
+    
+            Else
+                last = x
+            EndIf
+        Next
+
+        decode_error(str, i, "expected closing quote for string")
+
+    EndFunction
+    
+    Local Function parse_number(str, i)
+    
+        Local x = next_char(str, i, delim_chars)
+        Local s = MidStr(str, i, x - i)
+    
+        Local n = ToNumber(s)
+        If IsNil(n)
+            decode_error(str, i, "invalid number '" .. s .. "'")
+        EndIf
+
+        Return(n, x)
+
+    EndFunction
+    
+    Local Function parse_literal(str, i)
+    
+        Local x = next_char(str, i, delim_chars)
+        Local word = MidStr(str, i, x - i)
+        If Not HaveItem(literals, word)
+            decode_error(str, i, "invalid literal '" .. word .. "'")
+        EndIf
+
+        Return(literal_map[word], x)
+
+    EndFunction
+    
+    Local Function parse_array(str, i)
+    
+        Local res = {}
+        Local n = 0 ; NOTICE: In contrast to Lua, Hollywood is 0 based!
+        i = i + 1
+        Repeat
+            Local x
+            i = next_char(str, i, space_chars, True)
+            ; Empty / End of array?
+            If MidStr(str, i, 1) = "]"
+                i = i + 1
+                Break
+            EndIf
+            ; Read token
+            x, i = parse(str, i)
+            res[n] = x
+            n = n + 1
+            ; Next token
+            i = next_char(str, i, space_chars, True)
+            Local c = MidStr(str, i, 1)
+            i = i + 1
+            If c = "]" Then Break
+            If c <> "," Then decode_error(str, i, "expected ']' or ','")
+        Forever
+
+        Return(res, i)
+
+    EndFunction
+    
+    ; TODO: MIJU: Warum geht im aufrufenden Script myTable["myProperty"], aber nicht myTable.myProperty?
+    Local Function parse_object(str, i)
+        
+        Local res = {}
+        i = i + 1
+    
+        Repeat
+            Local key, value
+            i = next_char(str, i, space_chars, True)
+    
+            ; Empty / End of object?
+            If MidStr(str, i, 1) = "}"
+                i = i + 1
+                Break
+            EndIf
+            ; Read key
+            If MidStr(str, i, 1) <> "\""
+                decode_error(str, i, "expected string for key")
+            EndIf
+            key, i = parse(str, i)
+            ; Read ':' delimiter
+            i = next_char(str, i, space_chars, True)
+            If MidStr(str, i, 1) <> ":"
+                decode_error(str, i, "expected ':' after key")
+            EndIf
+            i = next_char(str, i + 1, space_chars, True)
+            ; Read value
+            value, i = parse(str, i)
+            ; Set
+            res[key] = value
+            ; next token
+            i = next_char(str, i, space_chars, True)
+            Local c = MidStr(str, i, 1)
+            i = i + 1
+            If c = "}" Then Break
+            If c <> "," Then decode_error(str, i, "expected '}' or ','")
+        Forever
+
+        Return(res, i)
+
+    EndFunction
+    
+    Local Function parse(str, idx)
+        
+        Local char_func_map = {
+            [ "\"" ] = parse_string,
+            [ "0" ] = parse_number,
+            [ "1" ] = parse_number,
+            [ "2" ] = parse_number,
+            [ "3" ] = parse_number,
+            [ "4" ] = parse_number,
+            [ "5" ] = parse_number,
+            [ "6" ] = parse_number,
+            [ "7" ] = parse_number,
+            [ "8" ] = parse_number,
+            [ "9" ] = parse_number,
+            [ "-" ] = parse_number,
+            [ "t" ] = parse_literal,
+            [ "f" ] = parse_literal,
+            [ "n" ] = parse_literal,
+            [ "[" ] = parse_array,
+            [ "{" ] = parse_object,
+        }
+        
+        Local c = MidStr(str, idx, 1)
+        
+        If HaveItem(char_func_map, c)
+            Local f = char_func_map[c]
+        
+            If f
+                Return(f(str, idx))
+            EndIf
+        EndIf
+
+        decode_error(str, idx, "unexpected character '" .. c .. "'")
+        
+    EndFunction
+    
+    Local Function decode(str)
+
+        /* Check str parameter is a string */
+        Local str_type = GetType(str)
+        If str_type <> #STRING
+            Local type_as_string = "unknown type"
+            Switch str_type
+                Case #NUMBER
+                    type_as_string = "number"
+                Case #TABLE
+                    type_as_string = "table"
+                Case #FUNCTION
+                    type_as_string = "function"
+                Case #USERDATA
+                    type_as_string = "userdata"
+                Case #LIGHTUSERDATA
+                    type_as_string = "lightuserdata"
+                Case #THREAD
+                    type_as_string = "thread"
+                Case #NIL
+                    type_as_string = "nil"
+            EndSwitch
+                
+            Error("expected argument of type string, got " .. type_as_string)
+        EndIf
+        
+        Local res, idx = parse(str, next_char(str, 0, space_chars, True))
+        idx = next_char(str, idx, space_chars, True)
+        If idx <= StrLen(str)
+            decode_error(str, idx, "trailing garbage")
+        EndIf
+
+        Return(res)
+        
+    EndFunction
+
+    Return( decode(str) )
+
+EndFunction
+
+;// TODO: function of json
+Function MyDebug(...)
+
+    Local Function PrettyPrint(item, name, indent)
+
+        DebugPrintNR(RepeatStr(" ", indent))
+
+        If GetType(item) = #TABLE
+            If StrLen(name) <> 0
+                DebugPrintNR(name, " : ")
+            EndIf
+        Else
+            If StrLen(name) = 0
+                DebugPrintNR(item, " ")
+            Else
+                DebugPrintNR(name, " : ", item)
+            EndIf	
+        EndIf
+    
+        Switch GetType(item)
+            Case #NUMBER
+                DebugPrint("")
+            Case #STRING
+                DebugPrint("")
+            Case #TABLE
+                DebugPrint("{")
+
+                For k,v In Pairs(item)
+                    PrettyPrint(v, k, indent + 2)
+                Next
+         
+                DebugPrintNR(RepeatStr(" ", indent) .. "}")
+                
+                If StrLen(name) <> 0
+                    DebugPrint(" // ", name)
+                Else
+                    DebugPrint("")
+                EndIf
+                
+            Case #FUNCTION
+                DebugPrint(" (function)")
+            Case #USERDATA
+                DebugPrint(" (userdata)")
+            Case #LIGHTUSERDATA
+                DebugPrint(" (lightuserdata)")
+            Case #THREAD
+                DebugPrint(" (thread)")
+            Case #NIL
+                DebugPrint(" (nil)")
+        EndSwitch
+    
+    
+    EndFunction
+
+    For k, v In IPairs(arg)
+        PrettyPrint(v, "param" .. k+1, 0)
+        DebugPrint("")
+    Next
+    
+EndFunction
+
+;MyDebug(decode(FileToString("test2.json")))
