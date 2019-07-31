@@ -67,11 +67,11 @@ Function json._encode.escape_char(c)
     Return(json._shared.escape_char_map[c] Or FormatStr("\\u%04x", ByteAsc(c)))
 EndFunction
 
-Function json._encode.encode_nil(Val)
+Function json._encode.encode_nil(val)
     Return("null")
 EndFunction
 
-Function json._encode.encode_table(Val, stack)
+Function json._encode.encode_table(val, stack)
 
     Local res = {}
 
@@ -80,43 +80,43 @@ Function json._encode.encode_table(Val, stack)
     EndIf
 
     ;// Circular reference?
-    If HaveItem(stack, Val) = True And stack[Val] = True Then Error("circular reference")
+    If HaveItem(stack, val) = True And stack[val] = True Then Error("circular reference")
 
-    stack[Val] = True
+    stack[val] = True
 
-    Local nextIndex, nextValue = NextItem(Val)
+    Local nextIndex, nextValue = NextItem(val)
 
-    If IsNil(RawGet(Val, 0)) = False Or IsNil(nextIndex) = True
+    If IsNil(RawGet(val, 0)) = False Or IsNil(nextIndex) = True
         ; Treat as array -- check keys are valid and it is not sparse
         Local n = 0
 
-        For k, v In Pairs(Val)
+        For k, v In Pairs(val)
             If GetType(k) <> #NUMBER Then Error("invalid table: mixed or invalid key types")
 
             n = n + 1
         Next
 
-        If n <> ListItems(Val) Then Error("invalid table: sparse array")
+        If n <> ListItems(val) Then Error("invalid table: sparse array")
 
         ; Encode
-        For i, v In IPairs(Val)
+        For i, v In IPairs(val)
             InsertItem(res, json._encode.encode(v, stack))
         Next
 
-        stack[Val] = Nil
+        stack[val] = Nil
 
         Local result = "[" .. Concat(res, ", ") .. "]"
         Return(result)
     Else
         ; Treat as an object
 
-        For k, v In Pairs(Val)
+        For k, v In Pairs(val)
             If GetType(k) <> #STRING Then Error("invalid table: mixed or invalid key types")
 
             InsertItem(res, json._encode.encode(k, stack) .. ": " .. json._encode.encode(v, stack))
         Next
 
-        stack[Val] = Nil
+        stack[val] = Nil
 
         Local result = "{" .. Concat(res, ", ") .. "}"
         Return(result)
@@ -124,19 +124,19 @@ Function json._encode.encode_table(Val, stack)
 
 EndFunction
 
-Function json._encode.encode_string(Val)
-    Local replacedString = PatternReplaceStr(Val, "[%z\1-\31\\\"]", json._encode.escape_char)
+Function json._encode.encode_string(val)
+    Local replacedString = PatternReplaceStr(val, "[%z\1-\31\\\"]", json._encode.escape_char)
 
     Return("\"" .. replacedString .. "\"")
 EndFunction
 
-Function json._encode.encode_number(Val)
-    If Val <> Val Then Error("unexpected number value '" .. Val .. "'")
+Function json._encode.encode_number(val)
+    If val <> val Then Error("unexpected number value '" .. val .. "'")
     
-    Return(FormatStr("%.14g", Val))
+    Return(FormatStr("%.14g", val))
 EndFunction
 
-Function json._encode.encode(Val, stack)
+Function json._encode.encode(val, stack)
 
     Local type_func_map = {
         [ "nil"     ] = json._encode.encode_nil,
@@ -146,7 +146,7 @@ Function json._encode.encode(Val, stack)
         [ "boolean" ] = ToString ; TODO but not possible (see comment below) :-(
     }
 
-    Local t = GetType(Val)
+    Local t = GetType(val)
 
     ; NOTICE: bool values (true/false) are also from type number in Hollywood,
     ; so there is no chance to distinguish them from numbers (1/0) :-( 
@@ -163,20 +163,32 @@ Function json._encode.encode(Val, stack)
             type_as_string = "nil"
     EndSwitch
 
-    Local f = type_func_map[type_as_string]
-    If f Then Return( f(Val, stack) )
+    ; check if there is a function defined in our mapping table
+    If HaveItem(type_func_map, type_as_string) Then Return( type_func_map[type_as_string](val, stack) )
 
-    Error("unexpected type '" .. t .. "'")
+    ; get a readable type for the error message for unexpected/unsuported types
+    Switch t
+        Case #FUNCTION
+            type_as_string = "function"
+        Case #USERDATA
+            type_as_string = "userdata"
+        Case #LIGHTUSERDATA
+            type_as_string = "lightuserdata"
+        Case #THREAD
+            type_as_string = "thread"
+    EndSwitch
+
+    Error("unexpected type: '" .. type_as_string .. "' (internal code: " .. t .. ")")
 
 EndFunction
 
-Function json.encode(Val)
-    Return( json._encode.encode(Val) )
+Function json.encode(val)
+    Return( json._encode.encode(val) )
 EndFunction
 
 ; alternative way of calling the encode function
-Function json_encode(Val)
-    Return( json.encode(Val) )
+Function json_encode(val)
+    Return( json.encode(val) )
 EndFunction
 
 ; ---------------------
