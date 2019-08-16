@@ -54,4 +54,5 @@ json.debug({ 1, 2, 3, { x = 10 } })
   or invalid numbers (NaN, -inf, inf) will raise an error
 * `null` values contained within an array or object are converted to `nil` and
   are therefore lost upon decoding
+* Due to Hollywood's handling of boolean values, unfortunately it is not possible to encode those values as `true`/`false`. Instead `true` is converted to `1` in the encoded format and `false` to `0`.
 * *Pretty* encoding is not (yet) supported, `json.encode()` only encodes to a compact format
