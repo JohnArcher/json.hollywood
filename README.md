@@ -1,6 +1,6 @@
 # json.hollywood
 
-This is a JSON encoder and decoder for Hollywood MAL (<https://www.hollywood-mal.de>) written in the Hollywood language.
+This is a JSON encoder and decoder for Hollywood MAL (<https://www.hollywood-mal.com>) written in the Hollywood language.
 
 It is a port/conversion of the *json.lua* library which can be found here: <https://github.com/rxi/json.lua> Thanks guys for your work!
 
