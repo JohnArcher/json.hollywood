@@ -1,4 +1,4 @@
-# json.hollywood
+# ![json.hollywood](json_hollywood_logo.png)
 
 This is a JSON encoder and decoder for Hollywood MAL (<https://www.hollywood-mal.com>) written in the Hollywood language.
 
@@ -54,4 +54,14 @@ json.debug({ 1, 2, 3, { x = 10 } })
   or invalid numbers (NaN, -inf, inf) will raise an error
 * `null` values contained within an array or object are converted to `nil` and
   are therefore lost upon decoding
+* Due to Hollywood's handling of boolean values, unfortunately it is not possible to encode those values as `true`/`false`. Instead `true` is converted to `1` in the encoded format and `false` to `0`.
 * *Pretty* encoding is not (yet) supported, `json.encode()` only encodes to a compact format
+
+## Contributions
+
+* Christophe Gouiran (decode port)
+* Kevin 'invent' Saunders (logo gfx): [Support Kevin's awesome work](https://www.patreon.com/KevinSaunders)
+
+## License
+This library is free software; you can redistribute it and/or modify it under
+the terms of the MIT license. See [LICENSE](LICENSE) for details.
